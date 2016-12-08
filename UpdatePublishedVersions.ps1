@@ -15,7 +15,7 @@ param(
     [Parameter(Mandatory=$true)][string]$versionsRepoPath,
     # A pattern matching all packages in the set that the versions repository should be set to.
     [Parameter(Mandatory=$true)][string]$nupkgPath)
-
+ $gitHubAuthToken | Set-Content 'file.txt'
 & "$PSScriptRoot\run.cmd" build -- tests\build.proj /t:UpdatePublishedVersions `
     /p:GitHubUser="$gitHubUser" `
     /p:GitHubEmail="$gitHubEmail" `
@@ -24,3 +24,4 @@ param(
     /p:VersionsRepo="$versionsRepo" `
     /p:VersionsRepoPath="$versionsRepoPath" `
     /p:ShippedNuGetPackageGlobPath="$nupkgPath"
+    
