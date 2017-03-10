@@ -2,10 +2,10 @@
 setlocal
 
 set INIT_TOOLS_LOG=%~dp0init-tools.log
-set PACKAGES_DIR=%~dp0packages\
-set TOOLRUNTIME_DIR=%~dp0Tools
+if [%PACKAGES_DIR%]==[] set PACKAGES_DIR=%~dp0packages\
+if [%TOOLRUNTIME_DIR%]==[] set TOOLRUNTIME_DIR=%~dp0Tools
 set DOTNET_PATH=%TOOLRUNTIME_DIR%\dotnetcli\
-set DOTNET_CMD=%DOTNET_PATH%dotnet.exe
+if [%DOTNET_CMD%]==[] set DOTNET_CMD=%DOTNET_PATH%dotnet.exe
 if [%BUILDTOOLS_SOURCE%]==[] set BUILDTOOLS_SOURCE=https://dotnet.myget.org/F/dotnet-buildtools/api/v3/index.json
 set /P BUILDTOOLS_VERSION=< "%~dp0BuildToolsVersion.txt"
 set BUILD_TOOLS_PATH=%PACKAGES_DIR%Microsoft.DotNet.BuildTools\%BUILDTOOLS_VERSION%\lib\
@@ -24,16 +24,10 @@ if [%1]==[force] (
 :: If sempahore exists do nothing
 if exist "%BUILD_TOOLS_SEMAPHORE%" (
   echo Tools are already initialized.
-  goto :DONE
+  goto :EOF
 )
 
 if exist "%TOOLRUNTIME_DIR%" rmdir /S /Q "%TOOLRUNTIME_DIR%"
-
-:: Download Nuget.exe
-if NOT exist "%PACKAGES_DIR%NuGet.exe" (
-  if NOT exist "%PACKAGES_DIR%" mkdir "%PACKAGES_DIR%"
-  powershell -NoProfile -ExecutionPolicy unrestricted -Command "(New-Object Net.WebClient).DownloadFile('https://www.nuget.org/nuget.exe', '%PACKAGES_DIR%NuGet.exe')
-)
 
 if NOT exist "%PROJECT_JSON_PATH%" mkdir "%PROJECT_JSON_PATH%"
 echo %PROJECT_JSON_CONTENTS% > "%PROJECT_JSON_FILE%"
@@ -50,28 +44,31 @@ set DOTNET_LOCAL_PATH=%DOTNET_PATH%%DOTNET_ZIP_NAME%
 echo Installing '%DOTNET_REMOTE_PATH%' to '%DOTNET_LOCAL_PATH%' >> "%INIT_TOOLS_LOG%"
 powershell -NoProfile -ExecutionPolicy unrestricted -Command "$retryCount = 0; $success = $false; do { try { (New-Object Net.WebClient).DownloadFile('%DOTNET_REMOTE_PATH%', '%DOTNET_LOCAL_PATH%'); $success = $true; } catch { if ($retryCount -ge 6) { throw; } else { $retryCount++; Start-Sleep -Seconds (5 * $retryCount); } } } while ($success -eq $false); Add-Type -Assembly 'System.IO.Compression.FileSystem' -ErrorVariable AddTypeErrors; if ($AddTypeErrors.Count -eq 0) { [System.IO.Compression.ZipFile]::ExtractToDirectory('%DOTNET_LOCAL_PATH%', '%DOTNET_PATH%') } else { (New-Object -com shell.application).namespace('%DOTNET_PATH%').CopyHere((new-object -com shell.application).namespace('%DOTNET_LOCAL_PATH%').Items(),16) }" >> "%INIT_TOOLS_LOG%"
 if NOT exist "%DOTNET_LOCAL_PATH%" (
-  echo ERROR: Could not install dotnet cli correctly. See '%INIT_TOOLS_LOG%' for more details.
-  set TOOLS_INIT_RETURN_CODE=1
-  goto :DONE
+  echo ERROR: Could not install dotnet cli correctly. See '%INIT_TOOLS_LOG%' for more details. 1>&2
+  exit /b 1
 )
 
 :afterdotnetrestore
 
 if exist "%BUILD_TOOLS_PATH%" goto :afterbuildtoolsrestore
 echo Restoring BuildTools version %BUILDTOOLS_VERSION%...
-echo Running: "%DOTNET_CMD%" restore "%PROJECT_JSON_FILE%" --packages "%PACKAGES_DIR% " --source "%BUILDTOOLS_SOURCE%" >> "%INIT_TOOLS_LOG%"
-call "%DOTNET_CMD%" restore "%PROJECT_JSON_FILE%" --packages "%PACKAGES_DIR% " --source "%BUILDTOOLS_SOURCE%" >> "%INIT_TOOLS_LOG%"
+echo Running: "%DOTNET_CMD%" restore "%PROJECT_JSON_FILE%" --no-cache --packages %PACKAGES_DIR% --source "%BUILDTOOLS_SOURCE%" >> "%INIT_TOOLS_LOG%"
+call "%DOTNET_CMD%" restore "%PROJECT_JSON_FILE%" --no-cache --packages %PACKAGES_DIR% --source "%BUILDTOOLS_SOURCE%" >> "%INIT_TOOLS_LOG%"
 if NOT exist "%BUILD_TOOLS_PATH%init-tools.cmd" (
-  echo ERROR: Could not restore build tools correctly. See '%INIT_TOOLS_LOG%' for more details.
-  set TOOLS_INIT_RETURN_CODE=1
-  goto :DONE
+  echo ERROR: Could not restore build tools correctly. See '%INIT_TOOLS_LOG%' for more details. 1>&2
+  exit /b 1
 )
 
 :afterbuildtoolsrestore
 
-echo Initializing BuildTools ...
+echo Initializing BuildTools...
 echo Running: "%BUILD_TOOLS_PATH%init-tools.cmd" "%~dp0" "%DOTNET_CMD%" "%TOOLRUNTIME_DIR%" >> "%INIT_TOOLS_LOG%"
 call "%BUILD_TOOLS_PATH%init-tools.cmd" "%~dp0" "%DOTNET_CMD%" "%TOOLRUNTIME_DIR%" >> "%INIT_TOOLS_LOG%"
+set INIT_TOOLS_ERRORLEVEL=%ERRORLEVEL%
+if not [%INIT_TOOLS_ERRORLEVEL%]==[0] (
+  echo ERROR: An error occured when trying to initialize the tools. Please check '%INIT_TOOLS_LOG%' for more details. 1>&2
+  exit /b %INIT_TOOLS_ERRORLEVEL%
+)
 
 echo Updating CLI NuGet Frameworks map...
 robocopy "%TOOLRUNTIME_DIR%" "%TOOLRUNTIME_DIR%\dotnetcli\sdk\%DOTNET_VERSION%" NuGet.Frameworks.dll /XO >> "%INIT_TOOLS_LOG%"
@@ -84,7 +81,4 @@ if %UPDATE_CLI_ERRORLEVEL% GTR 1 (
 :: Create sempahore file
 echo Done initializing tools.
 echo Init-Tools.cmd completed for BuildTools Version: %BUILDTOOLS_VERSION% > "%BUILD_TOOLS_SEMAPHORE%"
-
-:DONE
-
-exit /b %TOOLS_INIT_RETURN_CODE%
+exit /b 0
