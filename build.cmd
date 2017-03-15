@@ -3,32 +3,7 @@ setlocal EnableDelayedExpansion EnableExtensions
 
 echo Starting Build at %TIME%
 set __ThisScriptFull="%~f0"
-
-:: Default to highest Visual Studio version available
-::
-:: For VS2015 (and prior), only a single instance is allowed to be installed on a box
-:: and VS140COMNTOOLS is set as a global environment variable by the installer. This
-:: allows users to locate where the instance of VS2015 is installed.
-::
-:: For VS2017, multiple instances can be installed on the same box SxS and VS150COMNTOOLS
-:: is no longer set as a global environment variable and is instead only set if the user
-:: has launched the VS2017 Developer Command Prompt.
-::
-:: Following this logic, we will default to the VS2017 toolset if VS150COMNTOOLS tools is
-:: set, as this indicates the user is running from the VS2017 Developer Command Prompt and
-:: is already configured to use that toolset. Otherwise, we will fallback to using the VS2015
-:: toolset if it is installed. Finally, we will fail the script if no supported VS instance
-:: can be found.
-if defined VS150COMNTOOLS (
-  set "__VSToolsRoot=%VS150COMNTOOLS%"
-  set "__VCToolsRoot=%VS150COMNTOOLS%\..\..\VC\Auxiliary\Build"
-  set __VSVersion=vs2017
-) else (
-  set "__VSToolsRoot=%VS140COMNTOOLS%"
-  set "__VCToolsRoot=%VS140COMNTOOLS%\..\..\VC"
-  set __VSVersion=vs2015
-)
-
+set __VSToolsRoot=%VS140COMNTOOLS%
 :: Note that the msbuild project files (specifically, dir.proj) will use the following variables, if set:
 ::      __BuildArch         -- default: x64
 ::      __BuildType         -- default: Debug
@@ -49,6 +24,9 @@ set __BuildArch=x64
 set __BuildType=Debug
 set __BuildOS=Windows_NT
 
+:: Default to highest Visual Studio version available
+set __VSVersion=vs2015
+
 :: Define a prefix for most output progress messages that come from this script. That makes
 :: it easier to see where these are coming from. Note that there is a trailing space here.
 set "__MsgPrefix=BUILD: "
@@ -60,9 +38,9 @@ if %__ProjectDir:~-1%==\ set "__ProjectDir=%__ProjectDir:~0,-1%"
 set "__ProjectFilesDir=%__ProjectDir%"
 set "__SourceDir=%__ProjectDir%\src"
 set "__PackagesDir=%__ProjectDir%\packages"
+if NOT [%NUGET_PACKAGES%]==[] set __PackagesDir=%NUGET_PACKAGES%
 set "__RootBinDir=%__ProjectDir%\bin"
 set "__LogsDir=%__RootBinDir%\Logs"
-set "__OptDataVersion="
 
 set __BuildAll=
 
@@ -94,7 +72,6 @@ set __BuildNative=1
 set __BuildTests=1
 set __BuildPackages=1
 set __BuildNativeCoreLib=1
-set __RestoreOptData=1
 
 :Arg_Loop
 if "%1" == "" goto ArgsDone
@@ -129,12 +106,12 @@ if /i "%1" == "skipmscorlib"        (set __BuildCoreLib=0&set __BuildNativeCoreL
 if /i "%1" == "skipnative"          (set __BuildNative=0&set processedArgs=!processedArgs! %1&shift&goto Arg_Loop)
 if /i "%1" == "skiptests"           (set __BuildTests=0&set processedArgs=!processedArgs! %1&shift&goto Arg_Loop)
 if /i "%1" == "skipbuildpackages"   (set __BuildPackages=0&set processedArgs=!processedArgs! %1&shift&goto Arg_Loop)
-if /i "%1" == "skiprestoreoptdata"  (set __RestoreOptData=0&set processedArgs=!processedArgs! %1&shift&goto Arg_Loop)
 if /i "%1" == "usenmakemakefiles"   (set __NMakeMakefiles=1&set __ConfigureOnly=1&set __BuildNative=1&set __BuildNativeCoreLib=0&set __BuildCoreLib=0&set __BuildTests=0&set __BuildPackages=0&set processedArgs=!processedArgs! %1&shift&goto Arg_Loop)
 if /i "%1" == "buildjit32"          (set __BuildJit32="-DBUILD_JIT32=1"&set processedArgs=!processedArgs! %1&shift&goto Arg_Loop)
 if /i "%1" == "pgoinstrument"       (set __PgoInstrument=1&set processedArgs=!processedArgs! %1&shift&goto Arg_Loop)
 if /i "%1" == "toolset_dir"         (set __ToolsetDir=%2&set __PassThroughArgs=%__PassThroughArgs% %2&set processedArgs=!processedArgs! %1 %2&shift&shift&goto Arg_Loop)
 if /i "%1" == "compatjitcrossgen"   (set __CompatJitCrossgen=1&set processedArgs=!processedArgs! %1&shift&goto Arg_Loop)
+if /i "%1" == "legacyjitcrossgen"   (set __LegacyJitCrossgen=1&set processedArgs=!processedArgs! %1&shift&goto Arg_Loop)
 if /i "%1" == "buildstandalonegc"   (set __BuildStandaloneGC="-DFEATURE_STANDALONE_GC=1"&set processedArgs=!processedArgs! %1&shift&goto Arg_Loop)
 
 @REM The following can be deleted once the CI system that passes it is updated to not pass it.
@@ -228,33 +205,6 @@ call                                 "%__VSToolsRoot%\VsDevCmd.bat"
 
 REM =========================================================================================
 REM ===
-REM === Restore optimization profile data
-REM ===
-REM =========================================================================================
-
-REM Parse the package version out of project.json so that we can pass it on to CMake
-where /q python || (
-    echo %__MsgPrefix%Error: Python not found on PATH, please make sure that it is installed.
-    exit /b 1
-)
-set OptDataProjectJsonPath=%__ProjectDir%\src\.nuget\optdata\project.json
-if EXIST "%OptDataProjectJsonPath%" (
-    for /f "tokens=*" %%s in ('python "%__ProjectDir%\extract-from-json.py" -rf "%OptDataProjectJsonPath%" dependencies optimization.PGO.CoreCLR') do @(
-        set __OptDataVersion=%%s
-    )
-)
-
-if %__RestoreOptData% EQU 1 (
-    echo %__MsgPrefix%Restoring the OptimizationData Package
-    @call %__ProjectDir%\run.cmd sync -optdata
-    if not !errorlevel! == 0 (
-        echo %__MsgPrefix%Error: Failed to restore the optimization data package.
-        exit /b 1
-    )
-)
-
-REM =========================================================================================
-REM ===
 REM === Build the CLR VM
 REM ===
 REM =========================================================================================
@@ -286,8 +236,8 @@ if %__BuildNative% EQU 1 (
         set ___SDKVersion="-DCMAKE_SYSTEM_VERSION=10.0"
     )
 
-    echo %__MsgPrefix%Using environment: "%__VCToolsRoot%\vcvarsall.bat" !__VCBuildArch!
-    call                                 "%__VCToolsRoot%\vcvarsall.bat" !__VCBuildArch!
+    echo %__MsgPrefix%Using environment: "%__VSToolsRoot%\..\..\VC\vcvarsall.bat" !__VCBuildArch!
+    call                                 "%__VSToolsRoot%\..\..\VC\vcvarsall.bat" !__VCBuildArch!
 	@if defined _echo @echo on
 
     if not defined VSINSTALLDIR (
@@ -302,7 +252,7 @@ if %__BuildNative% EQU 1 (
     echo %__MsgPrefix%Regenerating the Visual Studio solution
 
     pushd "%__IntermediatesDir%"
-    set __ExtraCmakeArgs=!___SDKVersion! "-DCLR_CMAKE_TARGET_OS=%__BuildOs%" "-DCLR_CMAKE_PACKAGES_DIR=%__PackagesDir%" "-DCLR_CMAKE_PGO_INSTRUMENT=%__PgoInstrument%" "-DCLR_CMAKE_OPTDATA_VERSION=%__OptDataVersion%"
+    set __ExtraCmakeArgs=!___SDKVersion! "-DCLR_CMAKE_TARGET_OS=%__BuildOs%" "-DCLR_CMAKE_PACKAGES_DIR=%__PackagesDir%" "-DCLR_CMAKE_PGO_INSTRUMENT=%__PgoInstrument%"
     call "%__SourceDir%\pal\tools\gen-buildsys-win.bat" "%__ProjectDir%" %__VSVersion% %__BuildArch% %__BuildJit32% %__BuildStandaloneGC% !__ExtraCmakeArgs!
 	@if defined _echo @echo on
     popd
@@ -347,7 +297,7 @@ if /i "%__DoCrossArchBuild%"=="1" (
     :: Set the environment for the native build
     set __VCBuildArch=x86_amd64
     if /i "%__CrossArch%" == "x86" ( set __VCBuildArch=x86 )
-    @call "%__VCToolsRoot%\vcvarsall.bat" !__VCBuildArch!
+    @call "%__VSToolsRoot%\..\..\VC\vcvarsall.bat" !__VCBuildArch!
     @if defined _echo @echo on
 
     if not exist "%__CrossCompIntermediatesDir%" md "%__CrossCompIntermediatesDir%"
@@ -356,7 +306,7 @@ if /i "%__DoCrossArchBuild%"=="1" (
     pushd "%__CrossCompIntermediatesDir%"
     set __CMakeBinDir=%__CrossComponentBinDir%
     set "__CMakeBinDir=!__CMakeBinDir:\=/!"
-    set __ExtraCmakeArgs="-DCLR_CROSS_COMPONENTS_BUILD=1" "-DCLR_CMAKE_TARGET_ARCH=%__BuildArch%" "-DCLR_CMAKE_TARGET_OS=%__BuildOs%" "-DCLR_CMAKE_PACKAGES_DIR=%__PackagesDir%" "-DCLR_CMAKE_PGO_INSTRUMENT=%__PgoInstrument%" "-DCLR_CMAKE_OPTDATA_VERSION=%__OptDataVersion%"
+    set __ExtraCmakeArgs="-DCLR_CROSS_COMPONENTS_BUILD=1" "-DCLR_CMAKE_TARGET_ARCH=%__BuildArch%" "-DCLR_CMAKE_TARGET_OS=%__BuildOs%" "-DCLR_CMAKE_PACKAGES_DIR=%__PackagesDir%" "-DCLR_CMAKE_PGO_INSTRUMENT=%__PgoInstrument%"
     call "%__SourceDir%\pal\tools\gen-buildsys-win.bat" "%__ProjectDir%" %__VSVersion% %__CrossArch% !__ExtraCmakeArgs!
     @if defined _echo @echo on
     popd
@@ -429,6 +379,12 @@ if %__BuildNativeCoreLib% EQU 1 (
         set COMPlus_UseWindowsX86CoreLegacyJit=1
     )
 
+    if "%__LegacyJitCrossgen%"=="1" (
+        set COMPlus_AltJit=*
+        set COMPlus_AltJitNgen=*
+        set COMPlus_AltJitName=legacyjit.dll
+    )
+
     echo "%__CrossgenExe%" /Platform_Assemblies_Paths "%__BinDir%" /out "%__BinDir%\System.Private.CoreLib.ni.dll" "%__BinDir%\System.Private.CoreLib.dll"
     "%__CrossgenExe%" /Platform_Assemblies_Paths "%__BinDir%" /out "%__BinDir%\System.Private.CoreLib.ni.dll" "%__BinDir%\System.Private.CoreLib.dll" > "%__CrossGenCoreLibLog%" 2>&1
     if NOT !errorlevel! == 0 (
@@ -455,6 +411,12 @@ if %__BuildNativeCoreLib% EQU 1 (
 
     if "%__CompatJitCrossgen%"=="1" (
         set COMPlus_UseWindowsX86CoreLegacyJit=
+    )
+
+    if "%__LegacyJitCrossgen%"=="1" (
+        set COMPlus_AltJit=
+        set COMPlus_AltJitNgen=
+        set COMPlus_AltJitName=
     )
 
     if NOT !err! == 0 (
@@ -632,7 +594,6 @@ echo skipmscorlib: skip building System.Private.CoreLib ^(default: System.Privat
 echo skipnative: skip building native components ^(default: native components are built^).
 echo skiptests: skip building tests ^(default: tests are built^).
 echo skipbuildpackages: skip building nuget packages ^(default: packages are built^).
-echo skiprestoreoptdata: skip restoring optimization data used by profile-based optimizations.
 echo buildstandalonegc: builds the GC in a standalone mode.
 echo -skiprestore: skip restoring packages ^(default: packages are restored during build^).
 echo -disableoss: Disable Open Source Signing for System.Private.CoreLib.
@@ -662,7 +623,7 @@ at the install location of previous Visual Studio version. The workaround is to 
 of the previous version to "%VSINSTALLDIR%" and then build.
 :: DIA SDK not included in Express editions
 echo Visual Studio Express does not include the DIA SDK. ^
-You need Visual Studio 2015 or 2017 (Community is free).
+You need Visual Studio 2015+ (Community is free).
 echo See: https://github.com/dotnet/coreclr/blob/master/Documentation/project-docs/developer-guide.md#prerequisites
 exit /b 1
 
