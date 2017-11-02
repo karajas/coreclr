@@ -8,7 +8,6 @@
     <PackagesPattern Condition="'$(PackagesPattern)' == ''">$(PackagesBinDir)pkg\*.nupkg</PackagesPattern>
     <TestNativeBinariesPattern Condition="'$(TestNativeBinariesPattern)' == ''">$(OutputPath)\bin\**</TestNativeBinariesPattern>
     <SymbolsPackagesPattern Condition="'$(SymbolPackagesPattern)' == ''">$(PackagesBinDir)symbolpkg\*.nupkg</SymbolsPackagesPattern>
-    <PublishFlatContainer Condition="'$(PublishFlatContainer)' == ''">true</PublishFlatContainer>
   </PropertyGroup>
 
   <PropertyGroup>
@@ -28,9 +27,7 @@
     <PushToBlobFeed ExpectedFeedUrl="$(ExpectedFeedUrl)"
                     AccountKey="$(AccountKey)"
                     ItemsToPush="@(ItemsToPush)"
-                    PublishFlatContainer="$(PublishFlatContainer)"
-                    Overwrite="$(OverwriteOnPublish)" 
-                    IndexDirectory="$(__IntermediatesDir)"/>
+                    Overwrite="$(OverwriteOnPublish)" />
   </Target>
 
   <Target Name="PublishSymbolPackages" Condition="'$(__PublishSymbols)' == 'true' and ('$(OfficialPublish)' != 'true' or '$(__BuildType)' == 'Release')">
@@ -44,24 +41,36 @@
     <PushToBlobFeed ExpectedFeedUrl="$(ExpectedFeedUrl)"
                     AccountKey="$(AccountKey)"
                     ItemsToPush="@(ItemsToPush)"
-                    PublishFlatContainer="$(PublishFlatContainer)"
                     Overwrite="$(OverwriteOnPublish)" />
   </Target>
 
-  <Target Name="PublishTestNativeBinaries" Condition="'$(PublishTestNativeBins)' == 'true' and '$(OfficialPublish)' != 'true'">
+  <Target Name="PublishTestNativeBinaries" Condition="'$(PublishTestNativeBins)' == 'true' and '$(OfficialPublish)' != 'true'" DependsOnTargets="CreateContainerName;GatherTestNativeBinsForPublish;UploadToAzure" />
+  
+  <Target Name="GatherTestNativeBinsForPublish" Condition="'$(PublishTestNativeBins)' == 'true' and '$(OfficialPublish)' != 'true'">
+  
     <PropertyGroup>
-      <RelativePath Condition="'$(RelativePath)' == ''">$(__BuildType)/TestNativeBins</RelativePath>
-      <ExpectedFeedUrl>https://$(AccountName).blob.core.windows.net/$(ContainerName)/$(RelativePath)/index.json</ExpectedFeedUrl>
+      <PublishPattern Condition="'$(PublishPattern)' == '' and '$(PublishTestNativeBins)' == 'true'">$(OutputPath)\tests\src\**</PublishPattern>
     </PropertyGroup>
     <ItemGroup>
-      <ItemsToPush Remove="*.nupkg" />
-      <ItemsToPush Include="$(TestNativeBinariesPattern)"/>
+      <ForPublishing Include="$(PublishPattern)" />
     </ItemGroup>
-    <PushToBlobFeed ExpectedFeedUrl="$(ExpectedFeedUrl)"
-                    AccountKey="$(AccountKey)"
-                    ItemsToPush="@(ItemsToPush)"
-                    PublishFlatContainer="$(PublishFlatContainer)"
-                    Overwrite="$(OverwriteOnPublish)" />
+    <!-- add relative blob path metadata -->
+    <ItemGroup>
+      <ForPublishing>
+        <RelativeBlobPath>$(__BuildType)/TestNativeBins/$(__DistroRid)-$(__BuildArch)/%(RecursiveDir)%(Filename)%(Extension)</RelativeBlobPath>    
+      </ForPublishing>
+    </ItemGroup>
+    <Error Condition="'@(ForPublishing)' == ''" Text="No items were found matching pattern '$(PublishPattern)'." />
+
+  </Target>
+  
+  <Target Name="CreateContainerName"
+          DependsOnTargets="CreateVersionFileDuringBuild"
+          Condition="'$(ContainerName)' == '' or '$(PublishTestNativeBins)' == 'true'">
+    <PropertyGroup>
+      <ContainerName Condition="'$(__Container)' == '' and '$(PublishTestNativeBins)' == 'true'">coreclr-$(PreReleaseLabel)-$(BuildNumberMajor)-$(BuildNumberMinor)-$(__DistroRid)-$(__BuildArch)</ContainerName>
+      <ContainerName>$(ContainerName.Replace(".","-"))</ContainerName>
+    </PropertyGroup>
   </Target>
 
 
