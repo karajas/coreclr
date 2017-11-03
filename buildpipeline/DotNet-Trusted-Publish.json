@@ -90,8 +90,10 @@
         "definitionType": "task"
       },
       "inputs": {
-        "filename": "sync.cmd",
-        "arguments": "-ab -AzureAccount=$(CloudDropAccountName) -AzureToken=$(CloudDropAccessToken) -Container=$(PB_ContainerName) -BlobNamePrefix=$(PB_BlobNamePrefix)",
+        "scriptType": "inlineScript",
+        "scriptName": "",
+        "arguments": "$(CloudDropAccountName) $(CloudDropAccessToken) $(Label)",
+        "inlineScript": "param($account, $token, $container)\nif ($env:UseLegacyBuildScripts -eq \"true\")\n{\n  .\\sync.cmd /ab /p:CloudDropAccountName=$account /p:CloudDropAccessToken=$token /p:ContainerName=$container\n}\nelse\n{\n#  .\\sync.cmd -ab \"-AzureAccount=$account\" \"-AzureToken=$token\" \"-Container=$container\"\n  .\\init-tools.cmd\n  msbuild src\\syncAzure.proj /p:CloudDropAccountName=$account /p:CloudDropAccessToken=$token /p:ContainerName=$container\n}",
         "workingFolder": "$(Pipeline.SourcesDirectory)",
         "failOnStandardError": "false"
       }
